@@ -1,30 +1,41 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from usuarios.models import User
+from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.exc import SQLAlchemyError
 import pdfplumber
 import io
 import openai
 from dotenv import load_dotenv
 import os
+from database import engine, Base
+from auth.routes import router as auth_router
+from auth.login import router as login_router
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
 
-# Buscar a API Key do .env
+# Inicializar OpenAI client
 api_key = os.getenv("OPENAI_API_KEY")
-
-# Inicializar o client OpenAI
 client = openai.OpenAI(api_key=api_key)
 
-app = FastAPI()
+# Criar tabelas no banco de dados
+Base.metadata.create_all(bind=engine)
 
-# Configurar CORS liberado para todos
+# Inicializar FastAPI
+app = FastAPI(title="SmartCV - Currículo Inteligente")
+
+# Configurar CORS (liberado para todos)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Agora liberamos todas as origens para evitar travamentos
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Incluir rotas de autenticação e login
+app.include_router(auth_router)
+app.include_router(login_router)
 
 @app.get("/")
 def read_root():
@@ -33,8 +44,8 @@ def read_root():
 @app.post("/upload-curriculo/")
 async def upload_curriculo(file: UploadFile = File(...), vaga: str = Form(...)):
     conteudo = await file.read()
-
     texto_curriculo = ""
+
     if file.content_type == "application/pdf":
         with pdfplumber.open(io.BytesIO(conteudo)) as pdf:
             for pagina in pdf.pages:
@@ -42,7 +53,6 @@ async def upload_curriculo(file: UploadFile = File(...), vaga: str = Form(...)):
     else:
         texto_curriculo = "Formato de arquivo não suportado ainda."
 
-    # Criar o prompt para o OpenAI
     prompt = f"""
 Você é um especialista em recrutamento e seleção.
 
@@ -62,16 +72,18 @@ Vaga:
 {vaga}
 """
 
-    # Fazer a chamada para OpenAI
-    response = client.chat.completions.create(
-        model="gpt-4",  # ou "gpt-3.5-turbo" se quiser
-        messages=[
-            {"role": "system", "content": "Você é um consultor de RH especializado em recrutamento."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.5,
-        max_tokens=1000
-    )
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "Você é um consultor de RH especializado em recrutamento."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.5,
+            max_tokens=1000
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     resposta_texto = response.choices[0].message.content
 
